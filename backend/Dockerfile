@@ -2,7 +2,7 @@
 #   docker build -f backend/Dockerfile --target prod --build-arg SERVICE=identity .
 
 # ---------- base ----------
-FROM golang:1.26-alpine AS base
+FROM golang:1.27-alpine AS base
 WORKDIR /src/backend
 COPY backend/go.mod backend/go.sum ./
 COPY backend/tools/go.mod backend/tools/go.sum ./tools/
