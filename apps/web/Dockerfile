@@ -1,6 +1,6 @@
 # Контекст сборки — корень репозитория (нужен api/openapi.yaml).
 
-FROM node:24-alpine AS base
+FROM node:26-alpine AS base
 RUN corepack enable
 WORKDIR /src
 
@@ -27,7 +27,7 @@ ENV NUXT_API_PROXY_TARGET=$NUXT_API_PROXY_TARGET
 RUN pnpm --filter web build
 
 # ---------- prod ----------
-FROM node:24-alpine AS prod
+FROM node:26-alpine AS prod
 WORKDIR /app
 COPY --from=build /src/apps/web/.output ./.output
 ENV NODE_ENV=production PORT=3000
