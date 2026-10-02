@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+# Сгенерированный код: свёрнут в diff на GitHub и не учитывается в статистике языков
+backend/gen/** linguist-generated=true
+backend/services/*/internal/gen/** linguist-generated=true
+pnpm-lock.yaml linguist-generated=true -diff
+backend/go.sum linguist-generated=true
+backend/tools/go.sum linguist-generated=true

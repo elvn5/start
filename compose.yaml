@@ -1,0 +1,83 @@
+# Dev-окружение.
+#   docker compose up -d --wait postgres nats otel-lgtm   — только инфраструктура (task infra:up)
+#   docker compose --profile full up --build              — всё в контейнерах (task dev:docker)
+name: app
+
+x-go-service: &go-service
+  profiles: [full]
+  build: { context: ., dockerfile: backend/Dockerfile, target: dev }
+  volumes:
+    - ./backend:/src/backend
+    - ./api:/src/api
+    - gomod:/go/pkg/mod
+    - gobuild:/root/.cache/go-build
+  depends_on:
+    postgres: { condition: service_healthy }
+
+x-otel: &otel
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-lgtm:4317
+  OTEL_EXPORTER_OTLP_INSECURE: "true"
+
+services:
+  # ---------- инфраструктура ----------
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    ports: ["${POSTGRES_PORT:-5442}:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 2s
+      retries: 30
+
+  nats:
+    image: nats:2-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports: ["4222:4222", "8222:8222"]
+    volumes: [natsdata:/data]
+
+  otel-lgtm:
+    image: grafana/otel-lgtm
+    ports:
+      - "3001:3000" # Grafana (3000 занят Nuxt)
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+
+  # ---------- сервисы (профиль full) ----------
+  identity:
+    <<: *go-service
+    environment:
+      <<: *otel
+      SERVICE: identity
+      IDENTITY_DATABASE_URL: postgres://app:app@postgres:5432/identity?sslmode=disable
+
+  gateway:
+    <<: *go-service
+    environment:
+      <<: *otel
+      SERVICE: gateway
+      GATEWAY_IDENTITY_URL: http://identity:8081
+    ports: ["8080:8080"]
+
+  web:
+    profiles: [full]
+    build: { context: ., dockerfile: apps/web/Dockerfile, target: dev }
+    environment:
+      NUXT_API_PROXY_TARGET: http://gateway:8080
+    ports: ["3000:3000"]
+    develop:
+      watch:
+        - { action: sync, path: ./apps/web, target: /src/apps/web, ignore: [node_modules/, .nuxt/, .output/] }
+        - { action: sync, path: ./api, target: /src/api }
+        - { action: rebuild, path: ./apps/web/package.json }
+    depends_on: [gateway]
+
+volumes:
+  pgdata:
+  natsdata:
+  gomod:
+  gobuild:

@@ -1,0 +1,176 @@
+version: '3'
+
+# Единая точка входа для людей, CI и Claude Code: `task --list`
+dotenv: ['.env']
+
+vars:
+  # Go-инструменты (buf, sqlc, oapi-codegen, goose, air, плагины protoc) закреплены в backend/tools/go.mod
+  GOTOOL: go tool -modfile={{.ROOT_DIR}}/backend/tools/go.mod
+  SQLC_SERVICES: identity
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init:
+    desc: 'Переименовать проект из шаблона — task init NAME=myshop [MODULE=github.com/me/myshop/backend]'
+    requires: { vars: [NAME] }
+    cmd: ./scripts/init-project.sh {{.NAME}} {{.MODULE}}
+
+  setup:
+    desc: Первичная настройка (.env, зависимости, кодогенерация)
+    cmds:
+      - test -f .env || cp .env.example .env
+      - pnpm install
+      - cd backend && go mod download
+      - task: gen
+
+  # ---------- разработка ----------
+  dev:
+    desc: Инфраструктура в Docker + сервисы и Nuxt нативно с hot reload
+    cmds:
+      - task: infra:up
+      - task: dev:apps
+
+  dev:apps:
+    internal: true
+    deps: [dev:identity, dev:gateway, dev:web]
+
+  dev:identity:
+    desc: identity с hot reload (:8081)
+    cmds: [{ task: dev:svc, vars: { SVC: identity } }]
+
+  dev:gateway:
+    desc: gateway с hot reload (:8080)
+    cmds: [{ task: dev:svc, vars: { SVC: gateway } }]
+
+  dev:svc:
+    internal: true
+    dir: backend
+    cmd: >-
+      {{.GOTOOL}} air
+      --build.cmd "go build -o ./tmp/{{.SVC}}/app ./services/{{.SVC}}/cmd/{{.SVC}}"
+      --build.entrypoint "./tmp/{{.SVC}}/app"
+      --tmp_dir "tmp/{{.SVC}}"
+      --build.include_ext "go,sql"
+      --build.exclude_dir "tmp,tools,proto"
+
+  dev:web:
+    desc: Nuxt dev server (:3000)
+    cmd: pnpm --filter web dev
+
+  dev:docker:
+    desc: Всё в контейнерах (не нужны локальные Go/Node)
+    cmd: docker compose --profile full up --build
+
+  infra:up:
+    desc: Postgres, NATS, Grafana LGTM
+    cmd: docker compose up -d --wait postgres nats otel-lgtm
+
+  down:
+    desc: Остановить контейнеры
+    cmd: docker compose --profile full down
+
+  db:reset:
+    desc: Удалить данные Postgres и пересоздать базы (миграции применятся при старте сервисов)
+    prompt: Все локальные данные Postgres будут удалены. Продолжить?
+    cmds:
+      - docker compose rm -sf postgres
+      - docker volume rm -f app_pgdata
+      - task: infra:up
+
+  # ---------- кодогенерация ----------
+  gen:
+    desc: Вся кодогенерация (proto, OpenAPI, SQL)
+    cmds:
+      - task: gen:proto
+      - task: gen:api
+      - task: gen:sql
+
+  gen:proto:
+    desc: buf lint + generate
+    dir: backend/proto
+    sources: ['**/*.proto', 'buf.yaml', 'buf.gen.yaml']
+    cmds:
+      - '{{.GOTOOL}} buf lint'
+      - '{{.GOTOOL}} buf generate'
+
+  gen:api:
+    desc: oapi-codegen для gateway + типы клиента Nuxt
+    sources: [api/openapi.yaml, backend/services/gateway/oapi-codegen.yaml]
+    cmds:
+      - cd backend/services/gateway && {{.GOTOOL}} oapi-codegen -config oapi-codegen.yaml ../../../api/openapi.yaml
+      - pnpm --filter web exec nuxt prepare
+
+  gen:sql:
+    desc: sqlc для сервисов с БД
+    cmds:
+      - for: { var: SQLC_SERVICES, split: ' ' }
+        cmd: cd backend/services/{{.ITEM}} && {{.GOTOOL}} sqlc generate
+
+  new:migration:
+    desc: 'Новая миграция — task new:migration SVC=identity NAME=add_roles'
+    requires: { vars: [SVC, NAME] }
+    dir: backend/services/{{.SVC}}/migrations
+    cmd: '{{.GOTOOL}} goose create {{.NAME}} sql'
+
+  # ---------- проверки ----------
+  fmt:
+    desc: Форматирование Go, proto и фронта
+    cmds:
+      - cd backend && gofmt -w $(git ls-files --cached --others --exclude-standard '*.go' | grep -v '/gen/' || true)
+      - cd backend/proto && {{.GOTOOL}} buf format -w
+      - pnpm --filter web lint:fix
+
+  lint:
+    desc: Линтеры (go vet, buf, eslint)
+    cmds:
+      - cd backend && go vet ./...
+      - task: lint:breaking
+      - pnpm --filter web lint
+
+  lint:breaking:
+    desc: Проверка обратной совместимости proto относительно ветки main
+    dir: backend/proto
+    status:
+      - '! git rev-parse --verify --quiet main >/dev/null' # пропустить, пока нет ветки main
+    cmd: "{{.GOTOOL}} buf breaking --against '{{.ROOT_DIR}}/.git#branch=main,subdir=backend/proto'"
+
+  typecheck:
+    desc: Компиляция Go + vue-tsc
+    cmds:
+      - cd backend && go build ./...
+      - pnpm --filter web typecheck
+
+  test:
+    desc: Все тесты (интеграционные требуют Docker)
+    cmds:
+      - cd backend && go test ./...
+      - pnpm --filter web test
+
+  test:short:
+    desc: Быстрые тесты без Docker
+    cmds:
+      - cd backend && go test -short ./...
+      - pnpm --filter web test
+
+  check:
+    desc: Всё, что прогоняет CI — запускать перед тем, как считать работу готовой
+    cmds:
+      - task: gen
+      - task: lint
+      - task: typecheck
+      - task: test
+
+  # ---------- сборка ----------
+  docker:build:
+    desc: Собрать prod-образы
+    cmds:
+      - for: [identity, gateway]
+        cmd: docker build -f backend/Dockerfile --target prod --build-arg SERVICE={{.ITEM}} -t app-{{.ITEM}} .
+      - docker build -f apps/web/Dockerfile --target prod -t app-web .
+
+  docker:prod:
+    desc: Локально поднять prod-сборку (Caddy на :80)
+    cmd: docker compose -f compose.prod.yaml up --build -d

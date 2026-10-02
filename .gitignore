@@ -1,0 +1,23 @@
+.env
+.env.prod
+node_modules
+.nuxt
+.output
+.data
+.task
+backend/tmp
+.DS_Store
+/tmp
+*.log
+coverage
+test-results
+playwright-report
+
+# Claude Code: личные настройки и worktrees
+.claude/settings.local.json
+.claude/worktrees
+
+# IDE
+.idea
+.vscode/*
+!.vscode/extensions.json

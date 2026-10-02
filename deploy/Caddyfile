@@ -1,0 +1,9 @@
+{$DOMAIN:localhost} {
+	encode zstd gzip
+	handle /api/* {
+		reverse_proxy gateway:8080
+	}
+	handle {
+		reverse_proxy web:3000
+	}
+}

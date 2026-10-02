@@ -1,0 +1,58 @@
+# Prod-сборка: docker compose -f compose.prod.yaml up --build -d
+# Секреты — в .env.prod (POSTGRES_USER, POSTGRES_PASSWORD, IDENTITY_DATABASE_URL, DOMAIN).
+name: app-prod
+
+x-go-prod: &go-prod
+  restart: unless-stopped
+  env_file: .env.prod
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [gateway, web]
+    restart: unless-stopped
+
+  gateway:
+    <<: *go-prod
+    build: { context: ., dockerfile: backend/Dockerfile, target: prod, args: { SERVICE: gateway } }
+    environment:
+      GATEWAY_IDENTITY_URL: http://identity:8081
+    depends_on: [identity]
+
+  identity:
+    <<: *go-prod
+    build: { context: ., dockerfile: backend/Dockerfile, target: prod, args: { SERVICE: identity } }
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  web:
+    build: { context: ., dockerfile: apps/web/Dockerfile, target: prod }
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    env_file: .env.prod
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 5s
+    restart: unless-stopped
+
+  nats:
+    image: nats:2-alpine
+    command: ["-js", "-sd", "/data"]
+    volumes: [natsdata:/data]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  natsdata:
+  caddy_data:

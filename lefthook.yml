@@ -1,0 +1,14 @@
+# Git-хуки: lefthook install
+pre-commit:
+  parallel: true
+  commands:
+    gofmt:
+      glob: "backend/**/*.go"
+      exclude: ["backend/gen/**", "backend/services/*/internal/gen/**"]
+      run: gofmt -l {staged_files} | (! grep .)
+    go-vet:
+      glob: "backend/**/*.go"
+      run: cd backend && go vet ./...
+    eslint:
+      glob: "apps/web/**/*.{ts,vue,mjs}"
+      run: pnpm --filter web exec eslint {staged_files}
